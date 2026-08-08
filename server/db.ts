@@ -99,6 +99,12 @@ db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 db.exec(SCHEMA);
 
+function toCategory(value: string | null): MarketCategory {
+  return (MARKET_CATEGORIES as readonly string[]).includes(value ?? "")
+    ? (value as MarketCategory)
+    : "Other";
+}
+
 export function toMarket(row: MarketRow): Market {
   return {
     id: row.id,
@@ -108,9 +114,7 @@ export function toMarket(row: MarketRow): Market {
     description: row.description,
     url: row.url,
     imageUrl: row.image_url,
-    category: (MARKET_CATEGORIES as readonly string[]).includes(row.category ?? "")
-      ? (row.category as MarketCategory)
-      : "Other",
+    category: toCategory(row.category),
     marketProbability: row.market_probability,
     volume: row.volume,
     liquidity: row.liquidity,
@@ -221,13 +225,14 @@ export function listMarketsWithPredictions(query: MarketQuery = {}): MarketWithP
 }
 
 export function listCategories(): MarketCategory[] {
-  const rows = db
-    .prepare("SELECT DISTINCT category FROM markets WHERE category IS NOT NULL")
-    .all() as { category: string }[];
+  const rows = db.prepare("SELECT DISTINCT category FROM markets").all() as {
+    category: string | null;
+  }[];
 
-  return MARKET_CATEGORIES.filter((category) =>
-    rows.some((row) => row.category === category)
-  );
+  // Rows stored before categories existed, or with an unknown label, surface as
+  // "Other" on the card, so the chip has to exist for them too.
+  const present = new Set(rows.map((row) => toCategory(row.category)));
+  return MARKET_CATEGORIES.filter((category) => present.has(category));
 }
 
 export function getMarketWithPredictions(id: string): MarketWithPredictions | null {
