@@ -1,7 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
-import type { Market, MarketWithPredictions, Prediction } from "../shared/types.js";
+import { tradeSignal } from "../shared/trading.js";
+import {
+  MARKET_CATEGORIES,
+  type Market,
+  type MarketCategory,
+  type MarketWithPredictions,
+  type Prediction,
+} from "../shared/types.js";
 
 const DB_PATH = resolve(process.env.ARENA_DB_PATH ?? "data/arena.db");
 
@@ -101,7 +108,9 @@ export function toMarket(row: MarketRow): Market {
     description: row.description,
     url: row.url,
     imageUrl: row.image_url,
-    category: row.category,
+    category: (MARKET_CATEGORIES as readonly string[]).includes(row.category ?? "")
+      ? (row.category as MarketCategory)
+      : "Other",
     marketProbability: row.market_probability,
     volume: row.volume,
     liquidity: row.liquidity,
@@ -135,7 +144,30 @@ export function toPrediction(row: PredictionRow): Prediction {
 
 export interface MarketQuery {
   status?: "open" | "resolved";
+  category?: MarketCategory;
+  /** Only events whose deadline lands within the next 24 hours. */
+  decidingToday?: boolean;
+  /** Only events where at least one model disagrees enough with the price to bet. */
+  withSignal?: boolean;
   limit?: number;
+}
+
+/**
+ * Polymarket deadlines are stamped at UTC midnight, so a question decided
+ * tonight often carries tomorrow's date. A rolling 24h window is what a trader
+ * actually means by "decides today".
+ */
+function decidesToday(endDate: string | null): boolean {
+  if (!endDate) return false;
+  const deadline = new Date(endDate).getTime();
+  if (Number.isNaN(deadline)) return false;
+  return deadline <= Date.now() + 24 * 3_600_000;
+}
+
+function hasTradeSignal(market: MarketWithPredictions): boolean {
+  return market.predictions.some(
+    (prediction) => tradeSignal(prediction.probability, market.marketProbability) !== null
+  );
 }
 
 export function listMarketsWithPredictions(query: MarketQuery = {}): MarketWithPredictions[] {
@@ -168,12 +200,34 @@ export function listMarketsWithPredictions(query: MarketQuery = {}): MarketWithP
     byMarket.set(row.market_id, list);
   }
 
-  return marketRows.map((row) => ({
+  let markets: MarketWithPredictions[] = marketRows.map((row) => ({
     ...toMarket(row),
     predictions: (byMarket.get(row.id) ?? []).sort((a, b) =>
       a.modelName.localeCompare(b.modelName)
     ),
   }));
+
+  if (query.category) {
+    markets = markets.filter((market) => market.category === query.category);
+  }
+  if (query.decidingToday) {
+    markets = markets.filter((market) => decidesToday(market.endDate));
+  }
+  if (query.withSignal) {
+    markets = markets.filter(hasTradeSignal);
+  }
+
+  return markets;
+}
+
+export function listCategories(): MarketCategory[] {
+  const rows = db
+    .prepare("SELECT DISTINCT category FROM markets WHERE category IS NOT NULL")
+    .all() as { category: string }[];
+
+  return MARKET_CATEGORIES.filter((category) =>
+    rows.some((row) => row.category === category)
+  );
 }
 
 export function getMarketWithPredictions(id: string): MarketWithPredictions | null {

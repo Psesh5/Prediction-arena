@@ -1,12 +1,28 @@
 import { Link } from "react-router-dom";
 import type { MarketWithPredictions, Prediction } from "@shared/types";
 import { consensusProbability } from "@shared/scoring";
+import { expectedValue, tradeSignal } from "@shared/trading";
 import { formatPercent, formatVolume, timeUntil } from "@/lib/format";
 import ProbabilityBar from "./ProbabilityBar";
+import TradeBadge from "./TradeBadge";
 
-function predictionTone(market: MarketWithPredictions, prediction: Prediction) {
+function predictionTone(market: MarketWithPredictions, prediction: Prediction): string {
   if (market.status !== "resolved" || prediction.isCorrect === null) return "text-slate-300";
   return prediction.isCorrect ? "text-gain" : "text-loss";
+}
+
+/** The single most valuable disagreement between a model and the price. */
+function bestSignal(market: MarketWithPredictions) {
+  return market.predictions
+    .map((prediction) => ({
+      prediction,
+      signal: tradeSignal(prediction.probability, market.marketProbability),
+    }))
+    .filter((entry): entry is { prediction: Prediction; signal: NonNullable<typeof entry.signal> } =>
+      entry.signal !== null
+    )
+    .sort((a, b) => expectedValue(b.signal) - expectedValue(a.signal))
+    .at(0);
 }
 
 interface MarketCardProps {
@@ -16,16 +32,25 @@ interface MarketCardProps {
 export default function MarketCard({ market }: MarketCardProps) {
   const consensus = consensusProbability(market.predictions);
   const isResolved = market.status === "resolved";
+  const best = isResolved ? undefined : bestSignal(market);
 
   return (
     <article className="card transition-colors hover:border-ink-600">
       <div className="flex items-start justify-between gap-4">
-        <Link
-          to={`/markets/${market.id}`}
-          className="text-base font-semibold leading-snug text-slate-100 hover:text-accent-soft"
-        >
-          {market.question}
-        </Link>
+        <div>
+          <Link
+            to={`/markets/${market.id}`}
+            className="text-base font-semibold leading-snug text-slate-100 hover:text-accent-soft"
+          >
+            {market.question}
+          </Link>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="pill text-slate-400">{market.category}</span>
+            {best ? (
+              <TradeBadge signal={best.signal} label={best.prediction.modelName} />
+            ) : null}
+          </div>
+        </div>
         <span
           className={`pill shrink-0 ${
             isResolved

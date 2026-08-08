@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveCategory,
   isBinaryYesNo,
   parseJsonArray,
   selectCandidates,
@@ -45,7 +46,12 @@ describe("selectCandidates", () => {
   it("keeps liquid, open, genuinely uncertain markets", () => {
     const candidates = selectCandidates([gammaMarket()]);
     expect(candidates).toHaveLength(1);
-    expect(candidates[0]).toMatchObject({ sourceId: "1", probability: 0.4, liquidity: 50_000 });
+    expect(candidates[0]).toMatchObject({
+      sourceId: "1",
+      probability: 0.4,
+      liquidity: 50_000,
+      category: "Other",
+    });
   });
 
   it("drops closed, illiquid, multi-outcome and near-certain markets", () => {
@@ -61,6 +67,27 @@ describe("selectCandidates", () => {
   it("builds a Polymarket url from the slug", () => {
     const [candidate] = selectCandidates([gammaMarket({ slug: "will-it-happen" })]);
     expect(candidate.url).toBe("https://polymarket.com/market/will-it-happen");
+  });
+});
+
+describe("deriveCategory", () => {
+  it("maps tag slugs onto arena categories", () => {
+    expect(deriveCategory([{ slug: "nba" }, { slug: "sports" }])).toBe("Sports");
+    expect(deriveCategory([{ slug: "elections" }])).toBe("Politics");
+    expect(deriveCategory([{ slug: "bitcoin" }])).toBe("Crypto");
+  });
+
+  it("prefers the more specific category when tags overlap", () => {
+    expect(deriveCategory([{ slug: "politics" }, { slug: "bitcoin" }])).toBe("Crypto");
+  });
+
+  it("matches on labels as well as slugs", () => {
+    expect(deriveCategory([{ label: "Esports" }])).toBe("Sports");
+  });
+
+  it("falls back to Other", () => {
+    expect(deriveCategory([{ slug: "weather-in-topeka" }])).toBe("Other");
+    expect(deriveCategory(undefined)).toBe("Other");
   });
 });
 

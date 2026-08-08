@@ -1,3 +1,4 @@
+import { tradeReturn, tradeSignal } from "./trading.js";
 import type { LeaderboardRow, MarketWithPredictions, Outcome, Prediction } from "./types.js";
 
 /** Brier score of a single binary forecast. Lower is better; 0 is perfect. */
@@ -37,6 +38,8 @@ interface ModelAccumulator {
   correct: number[];
   beats: number[];
   confidences: number[];
+  returns: number[];
+  openStake: number;
 }
 
 /**
@@ -59,6 +62,8 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
           correct: [],
           beats: [],
           confidences: [],
+          returns: [],
+          openStake: 0,
         };
         byModel.set(prediction.modelId, entry);
       }
@@ -67,6 +72,9 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
 
       if (market.status !== "resolved" || !market.resolvedOutcome) {
         entry.openCount += 1;
+        if (tradeSignal(prediction.probability, market.marketProbability)) {
+          entry.openStake += 1;
+        }
         continue;
       }
 
@@ -80,6 +88,11 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
         const marketBrier = brierScore(marketProbability, outcome);
         entry.marketBriers.push(marketBrier);
         entry.beats.push(modelBrier < marketBrier ? 1 : 0);
+
+        const signal = tradeSignal(prediction.probability, marketProbability);
+        if (signal) {
+          entry.returns.push(tradeReturn(signal, outcome));
+        }
       }
     }
   }
@@ -87,6 +100,8 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
   const rows: LeaderboardRow[] = [...byModel.entries()].map(([modelId, entry]) => {
     const brier = mean(entry.briers);
     const marketBrier = mean(entry.marketBriers);
+    const totalReturn = entry.returns.reduce((sum, value) => sum + value, 0);
+    const wins = entry.returns.filter((value) => value > 0).length;
     return {
       modelId,
       modelName: entry.modelName,
@@ -98,14 +113,23 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       beatMarketRate: mean(entry.beats),
       edge: entry.marketBriers.length === 0 ? 0 : marketBrier - brier,
       averageConfidence: mean(entry.confidences),
+      trades: entry.returns.length,
+      tradeWins: wins,
+      tradeWinRate: entry.returns.length === 0 ? 0 : wins / entry.returns.length,
+      totalReturn,
+      roi: entry.returns.length === 0 ? 0 : totalReturn / entry.returns.length,
+      openStake: entry.openStake,
     };
   });
 
+  // Ranked by trading return first — the metric the arena is actually about —
+  // falling back to calibration for models that never found a bet.
   return rows.sort((a, b) => {
     if (a.resolvedCount === 0 || b.resolvedCount === 0) {
       if (a.resolvedCount !== b.resolvedCount) return b.resolvedCount - a.resolvedCount;
       return b.openCount - a.openCount;
     }
+    if (a.totalReturn !== b.totalReturn) return b.totalReturn - a.totalReturn;
     if (a.brierScore !== b.brierScore) return a.brierScore - b.brierScore;
     return b.resolvedCount - a.resolvedCount;
   });
