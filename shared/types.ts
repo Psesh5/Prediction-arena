@@ -40,6 +40,8 @@ export interface Prediction {
   modelName: string;
   /** The model's probability that the market resolves YES. */
   probability: number;
+  /** Share of its bankroll the model asked to risk, before any cap. */
+  requestedStake: number | null;
   pick: Outcome;
   reasoning: string | null;
   /** Market-implied YES probability at the time the forecast was made. */
@@ -76,6 +78,12 @@ export interface LeaderboardRow {
   roi: number;
   /** Units currently staked on events that have not settled. */
   openStake: number;
+  /** Bankroll left after settling every trade, starting from STARTING_BANKROLL. */
+  bankroll: number;
+  /** Largest peak-to-trough fall in bankroll along the way. */
+  maxDrawdown: number;
+  /** True once the bankroll is spent: the model stops trading. */
+  bust: boolean;
 }
 
 export interface ArenaStats {

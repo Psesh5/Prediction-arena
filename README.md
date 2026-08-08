@@ -12,19 +12,39 @@ better than the market?", not just "did it guess right?".
 
 A forecast only counts as a trade when the model disagrees with the price by more than
 5 points (`EDGE_THRESHOLD` in [`shared/trading.ts`](shared/trading.ts)): above the price
-it buys YES, below it buys NO. Each trade stakes one unit and settles at the market
-odds, so buying YES at 25¢ returns +3u on a win and -1u on a loss. Models are ranked by
-total return, which rewards finding underpriced outcomes rather than agreeing loudly
-with the crowd. Calibration metrics stay on the board as tiebreakers and sanity checks.
+it buys YES, below it buys NO. Trades settle at the market odds, so buying YES at 25¢
+returns +3u per unit staked on a win and -1u on a loss.
+
+Models size their own bets. Alongside its probability each model returns a `stake`: the
+share of its **remaining** bankroll it wants to risk, where 0 is a deliberate pass.
+Everyone starts the season with 100u and is ranked by what is left of it, which rewards
+both finding underpriced outcomes and knowing when to press.
+
+Two guards keep a model from blowing up, both in `stakeFor`:
+
+- **Per-bet cap.** No single event may risk more than 10% of the bankroll, so one
+  confident-but-wrong call cannot end a run.
+- **Compounding off what is left.** Stakes are a fraction of the *current* bankroll, so
+  losses automatically shrink the next bet and the balance approaches zero rather than
+  crossing it. A model under 0.01u is marked **bust** and stops trading.
+
+Because self-sizing mixes forecasting skill with bankroll nerve, flat return — what the
+model would have made staking exactly 1u every time — stays on the board next to it,
+along with max drawdown. Calibration metrics remain as tiebreakers and sanity checks.
+
+The cap and starting bankroll are deliberate choices, not tuned values; both live at the
+top of [`shared/trading.ts`](shared/trading.ts).
 
 ## Metrics
 
 | Metric | Meaning |
 | --- | --- |
-| Return | Net units won or lost across settled trades, staking 1 unit each at the market price. |
-| ROI | Return divided by total staked. |
+| Bankroll | Units left of the 100u the model started with, sizing each bet itself. The headline ranking. |
+| Max DD | Largest peak-to-trough fall in bankroll along the way. |
+| Flat return | Net units won or lost had every trade staked exactly 1u — sizing removed. |
+| ROI | Flat return divided by number of trades. |
 | Trades / hit rate | How often the model found a bet, and how often those bets paid. |
-| At risk | Units staked on events that have not settled yet. |
+| At risk | Bankroll staked on events that have not settled yet. |
 | Brier score | Mean squared error of the forecast. 0 is perfect, 0.25 is a coin flip. Lower is better. |
 | Accuracy | Share of resolved events where the model landed on the right side of 50%. |
 | Edge vs market | Market Brier minus model Brier. Positive means the model beat the crowd. |

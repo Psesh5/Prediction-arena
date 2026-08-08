@@ -52,6 +52,34 @@ export function tradeReturn(signal: TradeSignal, outcome: Outcome): number {
   return signal.side === outcome ? signal.payoff : -1;
 }
 
+/** Every model starts the season with the same bankroll, in units. */
+export const STARTING_BANKROLL = 100;
+
+/** No single event may risk more than this share of a model's bankroll. */
+export const MAX_STAKE_FRACTION = 0.1;
+
+/** Used when a model declines to size its own bet. */
+export const DEFAULT_STAKE_FRACTION = 0.02;
+
+/** A model with less than this left is bust and stops trading. */
+const RUIN_THRESHOLD = 0.01;
+
+/**
+ * Turns a model's requested share of bankroll into an actual stake. The cap is
+ * what keeps a single confident-but-wrong forecast from ending a model's run.
+ */
+export function stakeFor(requestedFraction: number | null, bankroll: number): number {
+  if (bankroll < RUIN_THRESHOLD) return 0;
+
+  const requested = requestedFraction ?? DEFAULT_STAKE_FRACTION;
+  const fraction = Math.min(Math.max(requested, 0), MAX_STAKE_FRACTION);
+  return bankroll * fraction;
+}
+
+export function isBust(bankroll: number): boolean {
+  return bankroll < RUIN_THRESHOLD;
+}
+
 /**
  * Expected value per unit staked, using the model's own probability. Useful for
  * ranking live opportunities before anything has resolved.

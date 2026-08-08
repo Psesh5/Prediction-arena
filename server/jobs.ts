@@ -79,10 +79,10 @@ export async function runPredictions(
 
   const insert = db.prepare(`
     INSERT INTO predictions (
-      id, market_id, model_id, model_name, probability, pick, reasoning,
+      id, market_id, model_id, model_name, probability, requested_stake, pick, reasoning,
       market_probability_at_prediction, created_at
     ) VALUES (
-      @id, @marketId, @modelId, @modelName, @probability, @pick, @reasoning,
+      @id, @marketId, @modelId, @modelName, @probability, @requestedStake, @pick, @reasoning,
       @marketProbability, @createdAt
     )
     ON CONFLICT (market_id, model_id) DO NOTHING
@@ -137,6 +137,7 @@ export async function runPredictions(
           modelId: result.model.id,
           modelName: result.model.name,
           probability: result.forecast.probability,
+          requestedStake: result.forecast.stake,
           pick: pickFromProbability(result.forecast.probability),
           reasoning: result.forecast.reasoning,
           marketProbability: market.market_probability,

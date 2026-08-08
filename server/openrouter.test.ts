@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { buildForecastPrompt, parseForecast } from "./openrouter.js";
+import { MAX_STAKE_FRACTION } from "../shared/trading.js";
 
 describe("parseForecast", () => {
   it("parses a bare JSON object", () => {
-    expect(parseForecast('{"probability": 0.73, "reasoning": "Base rates favor yes."}')).toEqual({
+    expect(
+      parseForecast('{"probability": 0.73, "stake": 0.04, "reasoning": "Base rates favor yes."}')
+    ).toEqual({
       probability: 0.73,
+      stake: 0.04,
       reasoning: "Base rates favor yes.",
     });
   });
@@ -27,12 +31,24 @@ describe("parseForecast", () => {
     const truncated = '{"probability": 0.65, "reasoning": "Traffic has stayed high and the';
     expect(parseForecast(truncated)).toEqual({
       probability: 0.65,
+      stake: null,
       reasoning: "Traffic has stayed high and the",
     });
   });
 
   it("defaults missing reasoning to an empty string", () => {
     expect(parseForecast('{"probability": 0.5}').reasoning).toBe("");
+  });
+
+  it("caps an oversized stake and ignores an unusable one", () => {
+    expect(parseForecast('{"probability": 0.5, "stake": 0.9}').stake).toBe(MAX_STAKE_FRACTION);
+    expect(parseForecast('{"probability": 0.5, "stake": "a lot"}').stake).toBeNull();
+    expect(parseForecast('{"probability": 0.5, "stake": -1}').stake).toBeNull();
+  });
+
+  it("treats a missing stake as no opinion rather than a pass", () => {
+    expect(parseForecast('{"probability": 0.5}').stake).toBeNull();
+    expect(parseForecast('{"probability": 0.5, "stake": 0}').stake).toBe(0);
   });
 });
 
@@ -45,6 +61,7 @@ describe("buildForecastPrompt", () => {
     expect(prompt).toContain("Will X happen?");
     expect(prompt).toContain("2026-09-01");
     expect(prompt).toContain("TODAY: 2026-08-08");
+    expect(prompt).toContain('"stake"');
   });
 
   it("truncates very long resolution details", () => {
@@ -54,6 +71,6 @@ describe("buildForecastPrompt", () => {
       endDate: null,
     });
     expect(prompt).toContain("RESOLUTION DEADLINE: unspecified");
-    expect(prompt.length).toBeLessThan(2200);
+    expect(prompt.length).toBeLessThan(2600);
   });
 });

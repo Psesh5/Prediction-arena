@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import type { MarketWithPredictions } from "@shared/types";
 import { brierScore, consensusProbability } from "@shared/scoring";
-import { tradeReturn, tradeSignal } from "@shared/trading";
+import { MAX_STAKE_FRACTION, tradeReturn, tradeSignal } from "@shared/trading";
 import { useMarket } from "@/lib/api";
 import { formatDate, formatPercent, formatScore, formatVolume, timeUntil } from "@/lib/format";
 import ProbabilityBar from "@/components/ProbabilityBar";
@@ -123,12 +123,21 @@ export default function MarketPage() {
                         signal={signal}
                         outcome={pnl === null ? undefined : pnl > 0 ? "won" : "lost"}
                       />
+                      <span
+                        className="pill text-slate-400"
+                        title="Share of its remaining bankroll the model chose to risk, capped at 10%."
+                      >
+                        {prediction.requestedStake === null
+                          ? "no size given"
+                          : `sized ${formatPercent(Math.min(prediction.requestedStake, MAX_STAKE_FRACTION))} of bankroll`}
+                      </span>
                       {pnl !== null ? (
                         <span
                           className={`font-mono text-xs ${pnl > 0 ? "text-gain" : "text-loss"}`}
+                          title="Profit per unit staked."
                         >
                           {pnl > 0 ? "+" : ""}
-                          {pnl.toFixed(2)}u
+                          {pnl.toFixed(2)}u per unit
                         </span>
                       ) : null}
                     </div>
