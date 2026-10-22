@@ -27,6 +27,7 @@ export async function syncMarkets(limit = 12, horizonDays?: number): Promise<Syn
       @probability, @volume, @liquidity, @endDate, 'open', @now, @now
     )
     ON CONFLICT (source, source_id) DO UPDATE SET
+      category = excluded.category,
       market_probability = excluded.market_probability,
       volume = excluded.volume,
       liquidity = excluded.liquidity,

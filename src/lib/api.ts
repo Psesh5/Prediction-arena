@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ArenaStats, LeaderboardRow, MarketWithPredictions } from "@shared/types";
+import type {
+  ArenaStats,
+  LeaderboardRow,
+  MarketCategory,
+  MarketWithPredictions,
+} from "@shared/types";
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
@@ -50,18 +55,37 @@ function useJson<T>(path: string): AsyncState<T> {
   return { data, loading, error, reload };
 }
 
-export function useMarkets(status?: "open" | "resolved"): AsyncState<MarketWithPredictions[]> {
-  return useJson<MarketWithPredictions[]>(
-    status ? `/api/markets?status=${status}` : "/api/markets"
-  );
+export interface MarketFilters {
+  status: "open" | "resolved";
+  category?: MarketCategory;
+  decidingToday?: boolean;
+  withSignal?: boolean;
+}
+
+export function marketsPath(filters: MarketFilters): string {
+  const params = new URLSearchParams({ status: filters.status });
+  if (filters.category) params.set("category", filters.category);
+  if (filters.decidingToday) params.set("decidingToday", "true");
+  if (filters.withSignal) params.set("withSignal", "true");
+  return `/api/markets?${params.toString()}`;
+}
+
+export function useMarkets(filters: MarketFilters): AsyncState<MarketWithPredictions[]> {
+  return useJson<MarketWithPredictions[]>(marketsPath(filters));
 }
 
 export function useMarket(marketId: string | undefined): AsyncState<MarketWithPredictions> {
   return useJson<MarketWithPredictions>(`/api/markets/${marketId ?? ""}`);
 }
 
-export function useLeaderboard(): AsyncState<LeaderboardRow[]> {
-  return useJson<LeaderboardRow[]>("/api/leaderboard");
+export function useLeaderboard(category?: MarketCategory): AsyncState<LeaderboardRow[]> {
+  return useJson<LeaderboardRow[]>(
+    category ? `/api/leaderboard?category=${category}` : "/api/leaderboard"
+  );
+}
+
+export function useCategories(): AsyncState<MarketCategory[]> {
+  return useJson<MarketCategory[]>("/api/categories");
 }
 
 export function useStats(): AsyncState<ArenaStats> {

@@ -1,4 +1,11 @@
+import type { MarketCategory } from "../shared/types.js";
+
 const GAMMA_API = "https://gamma-api.polymarket.com/markets";
+
+export interface GammaTag {
+  label?: string;
+  slug?: string;
+}
 
 export interface GammaMarket {
   id: string;
@@ -15,6 +22,7 @@ export interface GammaMarket {
   closed?: boolean;
   active?: boolean;
   umaResolutionStatus?: string;
+  tags?: GammaTag[];
 }
 
 export interface CandidateMarket {
@@ -23,7 +31,7 @@ export interface CandidateMarket {
   description: string | null;
   url: string | null;
   imageUrl: string | null;
-  category: string | null;
+  category: MarketCategory;
   probability: number | null;
   volume: number | null;
   liquidity: number | null;
@@ -48,6 +56,28 @@ export function isBinaryYesNo(outcomes: string[]): boolean {
   );
 }
 
+/** Tag slugs mapped onto the arena's coarse categories, most specific first. */
+const CATEGORY_BY_TAG: [MarketCategory, string[]][] = [
+  ["Crypto", ["crypto", "bitcoin", "ethereum", "solana", "crypto-prices", "memecoins"]],
+  ["Sports", ["sports", "nfl", "nba", "mlb", "soccer", "tennis", "epl", "ufc", "f1", "esports", "golf", "nhl"]],
+  ["Politics", ["politics", "elections", "us-politics", "trump", "congress", "geopolitics-2"]],
+  ["Economics", ["economy", "economics", "fed-rates", "inflation", "business", "finance", "stocks"]],
+  ["Tech", ["tech", "ai", "artificial-intelligence", "science", "space"]],
+  ["Culture", ["pop-culture", "culture", "movies", "music", "awards", "celebrities", "tv"]],
+  ["World", ["world", "geopolitics", "middle-east", "ukraine", "china", "russia", "israel", "iran"]],
+];
+
+export function deriveCategory(tags: GammaTag[] | undefined): MarketCategory {
+  const slugs = new Set(
+    (tags ?? []).flatMap((tag) => [tag.slug, tag.label?.toLowerCase()].filter(Boolean) as string[])
+  );
+
+  for (const [category, tagSlugs] of CATEGORY_BY_TAG) {
+    if (tagSlugs.some((slug) => slugs.has(slug))) return category;
+  }
+  return "Other";
+}
+
 export function yesPrice(market: GammaMarket): number | null {
   const price = Number(parseJsonArray(market.outcomePrices)[0]);
   return Number.isFinite(price) ? price : null;
@@ -66,7 +96,7 @@ export function toCandidate(market: GammaMarket): CandidateMarket {
     description: market.description ?? null,
     url: market.slug ? `https://polymarket.com/market/${market.slug}` : null,
     imageUrl: market.image ?? null,
-    category: market.category ?? null,
+    category: deriveCategory(market.tags),
     probability: yesPrice(market),
     volume: market.volumeNum ?? null,
     liquidity: market.liquidityNum ?? null,
@@ -102,6 +132,7 @@ export async function fetchOpenMarkets(limit: number, horizonDays = 45): Promise
     order: "volume24hr",
     ascending: "false",
     limit: String(Math.max(limit * 6, 60)),
+    include_tag: "true",
     end_date_min: new Date().toISOString(),
     end_date_max: new Date(Date.now() + horizonDays * 86_400_000).toISOString(),
   });

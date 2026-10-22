@@ -1,7 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
-import type { Market, MarketWithPredictions, Prediction } from "../shared/types.js";
+import { tradeSignal } from "../shared/trading.js";
+import {
+  MARKET_CATEGORIES,
+  type Market,
+  type MarketCategory,
+  type MarketWithPredictions,
+  type Prediction,
+} from "../shared/types.js";
 
 const DB_PATH = resolve(process.env.ARENA_DB_PATH ?? "data/arena.db");
 
@@ -92,6 +99,12 @@ db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 db.exec(SCHEMA);
 
+function toCategory(value: string | null): MarketCategory {
+  return (MARKET_CATEGORIES as readonly string[]).includes(value ?? "")
+    ? (value as MarketCategory)
+    : "Other";
+}
+
 export function toMarket(row: MarketRow): Market {
   return {
     id: row.id,
@@ -101,7 +114,7 @@ export function toMarket(row: MarketRow): Market {
     description: row.description,
     url: row.url,
     imageUrl: row.image_url,
-    category: row.category,
+    category: toCategory(row.category),
     marketProbability: row.market_probability,
     volume: row.volume,
     liquidity: row.liquidity,
@@ -135,7 +148,30 @@ export function toPrediction(row: PredictionRow): Prediction {
 
 export interface MarketQuery {
   status?: "open" | "resolved";
+  category?: MarketCategory;
+  /** Only events whose deadline lands within the next 24 hours. */
+  decidingToday?: boolean;
+  /** Only events where at least one model disagrees enough with the price to bet. */
+  withSignal?: boolean;
   limit?: number;
+}
+
+/**
+ * Polymarket deadlines are stamped at UTC midnight, so a question decided
+ * tonight often carries tomorrow's date. A rolling 24h window is what a trader
+ * actually means by "decides today".
+ */
+function decidesToday(endDate: string | null): boolean {
+  if (!endDate) return false;
+  const deadline = new Date(endDate).getTime();
+  if (Number.isNaN(deadline)) return false;
+  return deadline <= Date.now() + 24 * 3_600_000;
+}
+
+function hasTradeSignal(market: MarketWithPredictions): boolean {
+  return market.predictions.some(
+    (prediction) => tradeSignal(prediction.probability, market.marketProbability) !== null
+  );
 }
 
 export function listMarketsWithPredictions(query: MarketQuery = {}): MarketWithPredictions[] {
@@ -168,12 +204,35 @@ export function listMarketsWithPredictions(query: MarketQuery = {}): MarketWithP
     byMarket.set(row.market_id, list);
   }
 
-  return marketRows.map((row) => ({
+  let markets: MarketWithPredictions[] = marketRows.map((row) => ({
     ...toMarket(row),
     predictions: (byMarket.get(row.id) ?? []).sort((a, b) =>
       a.modelName.localeCompare(b.modelName)
     ),
   }));
+
+  if (query.category) {
+    markets = markets.filter((market) => market.category === query.category);
+  }
+  if (query.decidingToday) {
+    markets = markets.filter((market) => decidesToday(market.endDate));
+  }
+  if (query.withSignal) {
+    markets = markets.filter(hasTradeSignal);
+  }
+
+  return markets;
+}
+
+export function listCategories(): MarketCategory[] {
+  const rows = db.prepare("SELECT DISTINCT category FROM markets").all() as {
+    category: string | null;
+  }[];
+
+  // Rows stored before categories existed, or with an unknown label, surface as
+  // "Other" on the card, so the chip has to exist for them too.
+  const present = new Set(rows.map((row) => toCategory(row.category)));
+  return MARKET_CATEGORIES.filter((category) => present.has(category));
 }
 
 export function getMarketWithPredictions(id: string): MarketWithPredictions | null {

@@ -1,10 +1,21 @@
 import "dotenv/config";
 import express from "express";
-import { db, getMarketWithPredictions, listMarketsWithPredictions } from "./db.js";
+import {
+  db,
+  getMarketWithPredictions,
+  listCategories,
+  listMarketsWithPredictions,
+} from "./db.js";
 import { resolveMarkets, runPredictions, syncMarkets } from "./jobs.js";
 import { buildLeaderboard } from "../shared/scoring.js";
 import { ARENA_MODELS } from "../shared/models.js";
-import type { ArenaStats } from "../shared/types.js";
+import { MARKET_CATEGORIES, type ArenaStats, type MarketCategory } from "../shared/types.js";
+
+function parseCategory(value: unknown): MarketCategory | undefined {
+  return (MARKET_CATEGORIES as readonly string[]).includes(String(value))
+    ? (value as MarketCategory)
+    : undefined;
+}
 
 const PORT = Number(process.env.PORT ?? 8787);
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MINUTES ?? 30) * 60_000;
@@ -21,9 +32,16 @@ app.get("/api/markets", (req, res) => {
   res.json(
     listMarketsWithPredictions({
       status: status === "open" || status === "resolved" ? status : undefined,
+      category: parseCategory(req.query.category),
+      decidingToday: req.query.decidingToday === "true",
+      withSignal: req.query.withSignal === "true",
       limit: Number(req.query.limit ?? 100),
     })
   );
+});
+
+app.get("/api/categories", (_req, res) => {
+  res.json(listCategories());
 });
 
 app.get("/api/markets/:id", (req, res) => {
@@ -35,8 +53,12 @@ app.get("/api/markets/:id", (req, res) => {
   res.json(market);
 });
 
-app.get("/api/leaderboard", (_req, res) => {
-  res.json(buildLeaderboard(listMarketsWithPredictions({ limit: 500 })));
+app.get("/api/leaderboard", (req, res) => {
+  res.json(
+    buildLeaderboard(
+      listMarketsWithPredictions({ limit: 500, category: parseCategory(req.query.category) })
+    )
+  );
 });
 
 app.get("/api/stats", (_req, res) => {

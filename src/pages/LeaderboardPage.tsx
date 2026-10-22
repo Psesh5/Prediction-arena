@@ -1,27 +1,59 @@
-import { useLeaderboard } from "@/lib/api";
+import { useState } from "react";
+import type { MarketCategory } from "@shared/types";
+import { useCategories, useLeaderboard } from "@/lib/api";
 import { formatPercent, formatScore, formatSignedScore } from "@/lib/format";
 
 const COLUMNS = [
-  { key: "brier", label: "Brier", hint: "Mean squared error of the forecast. Lower is better." },
-  { key: "accuracy", label: "Accuracy", hint: "Share of resolved events called correctly." },
-  { key: "edge", label: "Edge vs market", hint: "Market Brier minus model Brier. Positive beats the crowd." },
-  { key: "beat", label: "Beat market", hint: "Share of events where the model scored better than the price." },
-  { key: "confidence", label: "Avg confidence", hint: "How far from 50/50 the model tends to sit." },
-  { key: "resolved", label: "Resolved", hint: "Scored forecasts backing these numbers." },
+  { key: "return", label: "Return", hint: "Net units won or lost, staking 1 unit per trade at the market price." },
+  { key: "roi", label: "ROI", hint: "Net return divided by total staked." },
+  { key: "trades", label: "Trades", hint: "Settled bets, taken when the model disagreed with the price by 5+ points." },
+  { key: "hit", label: "Hit rate", hint: "Share of settled trades that paid out." },
+  { key: "brier", label: "Brier", hint: "Mean squared forecast error across all resolved events. Lower is better." },
+  { key: "accuracy", label: "Accuracy", hint: "Share of resolved events called on the right side of 50%." },
+  { key: "edge", label: "Edge", hint: "Market Brier minus model Brier. Positive means better calibrated than the price." },
+  { key: "open", label: "At risk", hint: "Units staked on events that have not settled yet." },
 ];
 
 export default function LeaderboardPage() {
-  const { data, loading, error } = useLeaderboard();
+  const [category, setCategory] = useState<MarketCategory | undefined>();
+  const { data: categories } = useCategories();
+  const { data, loading, error } = useLeaderboard(category);
+
   const scored = data?.filter((row) => row.resolvedCount > 0) ?? [];
   const unscored = data?.filter((row) => row.resolvedCount === 0) ?? [];
 
   return (
     <div>
-      <div className="mb-6">
+      <div className="mb-4">
         <h1 className="text-xl font-semibold text-slate-100">Model leaderboard</h1>
         <p className="text-sm text-slate-500">
-          Ranked by Brier score across resolved events, with the market price as the benchmark.
+          Ranked by trading return: every time a model&apos;s probability beats the price by 5+
+          points, it stakes one unit at those odds.
         </p>
+      </div>
+
+      <div className="mb-6 flex flex-wrap gap-1 rounded-lg border border-ink-700 bg-ink-900 p-1">
+        <button
+          type="button"
+          onClick={() => setCategory(undefined)}
+          className={`rounded-md px-3 py-1.5 text-sm ${
+            category === undefined ? "bg-accent/15 text-accent-soft" : "text-slate-400"
+          }`}
+        >
+          All categories
+        </button>
+        {(categories ?? []).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => setCategory(option)}
+            className={`rounded-md px-3 py-1.5 text-sm ${
+              category === option ? "bg-accent/15 text-accent-soft" : "text-slate-400"
+            }`}
+          >
+            {option}
+          </button>
+        ))}
       </div>
 
       {loading ? <p className="text-sm text-slate-500">Loading leaderboard…</p> : null}
@@ -29,8 +61,8 @@ export default function LeaderboardPage() {
 
       {data && scored.length === 0 && !loading ? (
         <p className="card text-sm text-slate-500">
-          No events have resolved yet, so nothing is scored. Forecasts are still being collected
-          {unscored.length > 0 ? ` for ${unscored.length} models` : ""}.
+          No events have resolved yet, so no trades have settled. Forecasts are still being
+          collected{unscored.length > 0 ? ` from ${unscored.length} models` : ""}.
         </p>
       ) : null}
 
@@ -42,7 +74,11 @@ export default function LeaderboardPage() {
                 <th className="px-4 py-3 font-medium">#</th>
                 <th className="px-4 py-3 font-medium">Model</th>
                 {COLUMNS.map((column) => (
-                  <th key={column.key} className="px-4 py-3 text-right font-medium" title={column.hint}>
+                  <th
+                    key={column.key}
+                    className="px-4 py-3 text-right font-medium"
+                    title={column.hint}
+                  >
                     {column.label}
                   </th>
                 ))}
@@ -55,6 +91,28 @@ export default function LeaderboardPage() {
                   <td className="px-4 py-3">
                     <div className="font-medium text-slate-100">{row.modelName}</div>
                     <div className="font-mono text-xs text-slate-500">{row.modelId}</div>
+                  </td>
+                  <td
+                    className={`px-4 py-3 text-right font-mono ${
+                      row.totalReturn > 0
+                        ? "text-gain"
+                        : row.totalReturn < 0
+                          ? "text-loss"
+                          : "text-slate-300"
+                    }`}
+                  >
+                    {formatSignedScore(row.totalReturn, 2)}u
+                  </td>
+                  <td
+                    className={`px-4 py-3 text-right font-mono ${
+                      row.roi > 0 ? "text-gain" : row.roi < 0 ? "text-loss" : "text-slate-300"
+                    }`}
+                  >
+                    {row.trades === 0 ? "—" : formatPercent(row.roi, 1)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-slate-400">{row.trades}</td>
+                  <td className="px-4 py-3 text-right font-mono text-slate-100">
+                    {row.trades === 0 ? "—" : formatPercent(row.tradeWinRate)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono text-slate-100">
                     {formatScore(row.brierScore)}
@@ -69,14 +127,8 @@ export default function LeaderboardPage() {
                   >
                     {formatSignedScore(row.edge)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono text-slate-100">
-                    {formatPercent(row.beatMarketRate)}
-                  </td>
                   <td className="px-4 py-3 text-right font-mono text-slate-400">
-                    {formatPercent(row.averageConfidence)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-slate-400">
-                    {row.resolvedCount}
+                    {row.openStake}u
                   </td>
                 </tr>
               ))}
@@ -92,7 +144,9 @@ export default function LeaderboardPage() {
             {unscored.map((row) => (
               <span key={row.modelId} className="pill bg-ink-900">
                 <span className="text-slate-300">{row.modelName}</span>
-                <span className="font-mono text-slate-500">{row.openCount} open</span>
+                <span className="font-mono text-slate-500">
+                  {row.openCount} open · {row.openStake}u at risk
+                </span>
               </span>
             ))}
           </div>

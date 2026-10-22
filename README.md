@@ -8,10 +8,23 @@ that moment. When a question settles, each forecast is scored against the outcom
 against the price the crowd was offering — so the leaderboard answers "is this model
 better than the market?", not just "did it guess right?".
 
+## Trading and the leaderboard
+
+A forecast only counts as a trade when the model disagrees with the price by more than
+5 points (`EDGE_THRESHOLD` in [`shared/trading.ts`](shared/trading.ts)): above the price
+it buys YES, below it buys NO. Each trade stakes one unit and settles at the market
+odds, so buying YES at 25¢ returns +3u on a win and -1u on a loss. Models are ranked by
+total return, which rewards finding underpriced outcomes rather than agreeing loudly
+with the crowd. Calibration metrics stay on the board as tiebreakers and sanity checks.
+
 ## Metrics
 
 | Metric | Meaning |
 | --- | --- |
+| Return | Net units won or lost across settled trades, staking 1 unit each at the market price. |
+| ROI | Return divided by total staked. |
+| Trades / hit rate | How often the model found a bet, and how often those bets paid. |
+| At risk | Units staked on events that have not settled yet. |
 | Brier score | Mean squared error of the forecast. 0 is perfect, 0.25 is a coin flip. Lower is better. |
 | Accuracy | Share of resolved events where the model landed on the right side of 50%. |
 | Edge vs market | Market Brier minus model Brier. Positive means the model beat the crowd. |
@@ -38,6 +51,14 @@ npm run resolve        # refresh prices and score settled markets
 
 Data lives in a local SQLite file (`data/arena.db` by default).
 
+## Feed filters
+
+The event feed filters on status (live/resolved), category (derived from Polymarket
+tags: Politics, Sports, Crypto, Economics, Tech, Culture, World), deadlines inside the
+next 24 hours, and whether any model currently sees a tradeable edge. The leaderboard
+takes the same category filter, so you can ask which model is best at sports separately
+from which is best at politics.
+
 ## Roster
 
 Models compete through OpenRouter and are listed in
@@ -48,7 +69,7 @@ the market price at prediction time, so the comparison stays apples-to-apples.
 ## Layout
 
 ```
-shared/    types, scoring, model roster (used by both server and UI)
+shared/    types, scoring, trading model, model roster (used by both server and UI)
 server/    Express API, SQLite storage, Polymarket + OpenRouter clients, jobs
 src/       React UI: event feed, event detail, leaderboard
 scripts/   manual job runners

@@ -1,9 +1,11 @@
 import { Link, useParams } from "react-router-dom";
 import type { MarketWithPredictions } from "@shared/types";
 import { brierScore, consensusProbability } from "@shared/scoring";
+import { tradeReturn, tradeSignal } from "@shared/trading";
 import { useMarket } from "@/lib/api";
 import { formatDate, formatPercent, formatScore, formatVolume, timeUntil } from "@/lib/format";
 import ProbabilityBar from "@/components/ProbabilityBar";
+import TradeBadge from "@/components/TradeBadge";
 
 function outcomeClass(market: MarketWithPredictions, isCorrect: boolean | null): string {
   if (market.status !== "resolved" || isCorrect === null) return "text-slate-300";
@@ -33,6 +35,7 @@ export default function MarketPage() {
           <span className="pill">
             {isResolved ? `Resolved ${market.resolvedOutcome}` : timeUntil(market.endDate)}
           </span>
+          <span className="pill">{market.category}</span>
           <span className="pill">Deadline {formatDate(market.endDate)}</span>
           <span className="pill">Volume {formatVolume(market.volume)}</span>
           {market.url ? (
@@ -84,6 +87,17 @@ export default function MarketPage() {
                     brierScore(prediction.probability, market.resolvedOutcome))
                   : null;
 
+              // Live events are judged against the current price; settled ones
+              // against the price the model actually got.
+              const signal = tradeSignal(
+                prediction.probability,
+                isResolved ? prediction.marketProbabilityAtPrediction : market.marketProbability
+              );
+              const pnl =
+                signal && isResolved && market.resolvedOutcome
+                  ? tradeReturn(signal, market.resolvedOutcome)
+                  : null;
+
               return (
                 <article key={prediction.id} className="card">
                   <div className="flex items-start justify-between gap-4">
@@ -103,6 +117,23 @@ export default function MarketPage() {
                       </p>
                     </div>
                   </div>
+                  {signal ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <TradeBadge
+                        signal={signal}
+                        outcome={pnl === null ? undefined : pnl > 0 ? "won" : "lost"}
+                      />
+                      {pnl !== null ? (
+                        <span
+                          className={`font-mono text-xs ${pnl > 0 ? "text-gain" : "text-loss"}`}
+                        >
+                          {pnl > 0 ? "+" : ""}
+                          {pnl.toFixed(2)}u
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   {prediction.reasoning ? (
                     <p className="mt-3 border-t border-ink-800 pt-3 text-sm leading-relaxed text-slate-400">
                       {prediction.reasoning}

@@ -32,7 +32,7 @@ function market(
     description: null,
     url: null,
     imageUrl: null,
-    category: null,
+    category: "Other",
     marketProbability: 0.5,
     volume: 1000,
     liquidity: 1000,
@@ -109,8 +109,20 @@ describe("buildLeaderboard", () => {
 
   const rows = buildLeaderboard(markets);
 
-  it("ranks the better-calibrated model first", () => {
+  it("ranks by trading return", () => {
     expect(rows[0].modelId).toBe("sharp");
+    // Bought YES at 0.6 and NO at 0.6, both winners.
+    expect(rows[0].trades).toBe(2);
+    expect(rows[0].tradeWins).toBe(2);
+    expect(rows[0].totalReturn).toBeCloseTo(2 * (0.4 / 0.6));
+    expect(rows[0].roi).toBeCloseTo(0.4 / 0.6);
+
+    const blunt = rows.find((row) => row.modelId === "blunt");
+    expect(blunt?.totalReturn).toBe(-2);
+    expect(blunt?.tradeWinRate).toBe(0);
+  });
+
+  it("scores calibration alongside returns", () => {
     expect(rows[0].brierScore).toBeCloseTo(0.01);
     expect(rows[0].accuracy).toBe(1);
   });
@@ -128,6 +140,24 @@ describe("buildLeaderboard", () => {
     expect(rows.find((row) => row.modelId === "sharp")?.openCount).toBe(1);
     expect(rows.at(-1)?.modelId).toBe("rookie");
     expect(rows.at(-1)?.resolvedCount).toBe(0);
+  });
+
+  it("skips trades the model never would have taken", () => {
+    const agrees = buildLeaderboard([
+      market("m5", "YES", [
+        prediction({ modelId: "flat", probability: 0.52, marketProbabilityAtPrediction: 0.5 }),
+      ]),
+    ]);
+    expect(agrees[0].trades).toBe(0);
+    expect(agrees[0].totalReturn).toBe(0);
+    expect(agrees[0].roi).toBe(0);
+  });
+
+  it("tracks stake at risk on unresolved events", () => {
+    const live = buildLeaderboard([
+      market("m6", null, [prediction({ modelId: "bold", probability: 0.9 })]),
+    ]);
+    expect(live[0].openStake).toBe(1);
   });
 
   it("ignores market comparison when no price was recorded", () => {
