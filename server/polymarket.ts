@@ -1,4 +1,5 @@
 import type { MarketCategory } from "../shared/types.js";
+import { fetchWithRetry } from "./http.js";
 
 const GAMMA_API = "https://gamma-api.polymarket.com/markets";
 
@@ -137,7 +138,9 @@ export async function fetchOpenMarkets(limit: number, horizonDays = 45): Promise
     end_date_max: new Date(Date.now() + horizonDays * 86_400_000).toISOString(),
   });
 
-  const response = await fetch(`${GAMMA_API}?${params.toString()}`);
+  const response = await fetchWithRetry(`${GAMMA_API}?${params.toString()}`, {}, {
+    label: "Polymarket markets",
+  });
   if (!response.ok) {
     throw new Error(`Polymarket request failed: ${response.status}`);
   }
@@ -147,24 +150,105 @@ export async function fetchOpenMarkets(limit: number, horizonDays = 45): Promise
 }
 
 export async function fetchMarket(sourceId: string): Promise<GammaMarket | null> {
-  const response = await fetch(`${GAMMA_API}/${sourceId}`);
+  const response = await fetchWithRetry(`${GAMMA_API}/${sourceId}`, {}, {
+    label: `Polymarket market ${sourceId}`,
+    retries: 1,
+  });
   if (!response.ok) return null;
   return (await response.json()) as GammaMarket;
 }
 
 export type SettlementStatus =
-  | { state: "open"; probability: number | null }
-  | { state: "pending"; probability: number | null }
-  | { state: "settled"; outcome: "YES" | "NO"; probability: number };
+  | { state: "open"; probability: number | null; resolutionStatus: string | null }
+  | { state: "pending"; probability: number | null; resolutionStatus: string | null }
+  | { state: "settled"; outcome: "YES" | "NO"; probability: number; source: ResolutionSource; resolutionStatus: string | null }
+  | { state: "invalid"; probability: number | null; source: ResolutionSource; resolutionStatus: string | null };
+
+export type ResolutionSource = "uma" | "price_inference";
 
 const SETTLED_THRESHOLD = 0.99;
+const SPLIT_REFUND_PRICE = 0.5;
+const SPLIT_REFUND_TOLERANCE = 0.02;
 
-/** Interprets a Gamma market payload as open, closed-but-unsettled, or settled. */
+/**
+ * UMA resolution statuses that mean the oracle has delivered a final answer.
+ * Anything else on a closed market — "proposed", "disputed", null — still
+ * waits, because UMA proposals can be disputed and flipped.
+ */
+const UMA_FINAL_STATUSES = new Set(["resolved", "settled"]);
+
+function decisiveOutcome(prices: number[]): "YES" | "NO" | null {
+  if (prices.length < 2) return null;
+  const [yes, no] = prices;
+  if (yes >= SETTLED_THRESHOLD && no <= 1 - SETTLED_THRESHOLD) return "YES";
+  if (no >= SETTLED_THRESHOLD && yes <= 1 - SETTLED_THRESHOLD) return "NO";
+  return null;
+}
+
+/** A market that paid out 50/50 — Polymarket's way of cancelling a question. */
+function isSplitRefund(prices: number[]): boolean {
+  if (prices.length < 2) return false;
+  return prices.every(
+    (price) => Math.abs(price - SPLIT_REFUND_PRICE) <= SPLIT_REFUND_TOLERANCE
+  );
+}
+
+function numericPrices(market: GammaMarket): number[] {
+  return parseJsonArray(market.outcomePrices)
+    .map(Number)
+    .filter((price) => Number.isFinite(price));
+}
+
+/**
+ * Interprets a Gamma market payload as open, closed-but-unsettled, settled, or
+ * invalidated. The UMA resolution status is authoritative: a market only
+ * scores once the oracle reports a final answer, and a 50/50 payout means the
+ * question was voided rather than won. Price thresholds are a fallback for the
+ * rare payload that carries no UMA status at all.
+ */
 export function settlementStatus(market: GammaMarket): SettlementStatus {
   const price = yesPrice(market);
-  if (!market.closed) return { state: "open", probability: price };
-  if (price === null) return { state: "pending", probability: null };
-  if (price >= SETTLED_THRESHOLD) return { state: "settled", outcome: "YES", probability: price };
-  if (price <= 1 - SETTLED_THRESHOLD) return { state: "settled", outcome: "NO", probability: price };
-  return { state: "pending", probability: price };
+  const resolutionStatus = market.umaResolutionStatus ?? null;
+  const prices = numericPrices(market);
+
+  if (!market.closed) {
+    return { state: "open", probability: price, resolutionStatus };
+  }
+
+  if (resolutionStatus !== null && UMA_FINAL_STATUSES.has(resolutionStatus)) {
+    if (isSplitRefund(prices)) {
+      return { state: "invalid", probability: price, source: "uma", resolutionStatus };
+    }
+    const outcome = decisiveOutcome(prices);
+    if (outcome !== null) {
+      return {
+        state: "settled",
+        outcome,
+        probability: price ?? (outcome === "YES" ? 1 : 0),
+        source: "uma",
+        resolutionStatus,
+      };
+    }
+    // Final per the oracle but the prices don't decode: don't guess.
+    return { state: "pending", probability: price, resolutionStatus };
+  }
+
+  if (resolutionStatus !== null) {
+    // Closed and under an unresolved/disputed UMA claim: keep waiting.
+    return { state: "pending", probability: price, resolutionStatus };
+  }
+
+  // No UMA status reported — older payloads. Fall back to price inference so
+  // long-settled markets still score, but only on decisive prices.
+  if (price === null) return { state: "pending", probability: null, resolutionStatus };
+  if (isSplitRefund(prices)) {
+    return { state: "invalid", probability: price, source: "price_inference", resolutionStatus };
+  }
+  if (price >= SETTLED_THRESHOLD) {
+    return { state: "settled", outcome: "YES", probability: price, source: "price_inference", resolutionStatus };
+  }
+  if (price <= 1 - SETTLED_THRESHOLD) {
+    return { state: "settled", outcome: "NO", probability: price, source: "price_inference", resolutionStatus };
+  }
+  return { state: "pending", probability: price, resolutionStatus };
 }

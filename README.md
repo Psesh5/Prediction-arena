@@ -59,9 +59,10 @@ cp .env.example .env   # add your OPENROUTER_API_KEY
 npm run dev            # API on :8787, UI on :5173
 ```
 
-The dev server runs a sync → forecast → resolve cycle on boot and every
-`SYNC_INTERVAL_MINUTES` (default 30). Set `ARENA_DISABLE_CRON=1` to turn that off and
-drive it manually instead:
+The dev server runs a sync → forecast → resolve cycle every `SYNC_INTERVAL_MINUTES`
+(default 30), but not on boot — restarts don't spend credits by surprise. Set
+`ARENA_RUN_ON_START=1` to opt back into an immediate cycle, or
+`ARENA_DISABLE_CRON=1` to disable the loop and drive it manually:
 
 ```sh
 npm run sync -- 6 14   # sync + forecast 6 markets closing within 14 days, then resolve
@@ -69,7 +70,26 @@ npm run predict -- 20  # forecast any market missing forecasts
 npm run resolve        # refresh prices and score settled markets
 ```
 
-Data lives in a local SQLite file (`data/arena.db` by default).
+Data lives in a local SQLite file (`data/arena.db` by default). Schema changes ship
+as versioned migrations in `server/db.ts` — see the `schema_migrations` table.
+
+## Production
+
+`npm run build` produces `dist/`, which the server serves automatically when it
+exists, so a single process hosts API + UI:
+
+```sh
+npm ci && npm run build && npm start
+```
+
+`POST /api/cycle` requires `ARENA_ADMIN_KEY` sent as the `x-admin-key` header and is
+disabled entirely when unset. Paid work is bounded by `ARENA_DAILY_SPEND_LIMIT_USD`
+(default 5) and capped concurrency (`ARENA_FORECAST_CONCURRENCY`, default 4).
+Every job leaves a `job_runs` row and every forecast a `forecast_attempts` row with
+prompt version, tokens, cost, and the raw response. `GET /api/ready` reports DB
+health, last successful run per job type, stale open markets, and today's spend.
+Resolution only counts a market when Polymarket's UMA oracle reports a final
+answer — a 50/50 payout is recorded as invalid, never scored.
 
 ## Feed filters
 

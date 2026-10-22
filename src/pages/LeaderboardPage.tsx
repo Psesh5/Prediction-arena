@@ -96,6 +96,11 @@ export default function LeaderboardPage() {
                     <div className="font-medium text-slate-100">
                       {row.modelName}
                       {row.bust ? <span className="ml-2 pill border-loss/50 text-loss">bust</span> : null}
+                      {row.provisional ? (
+                        <span className="ml-2 pill border-ink-600 text-slate-400" title={`Fewer than 30 resolved forecasts — ranking not yet stable (${row.resolvedCount} so far).`}>
+                          provisional
+                        </span>
+                      ) : null}
                     </div>
                     <div className="font-mono text-xs text-slate-500">{row.modelId}</div>
                   </td>
@@ -147,6 +152,11 @@ export default function LeaderboardPage() {
                     }`}
                   >
                     {formatSignedScore(row.edge)}
+                    {row.edgeCi95 ? (
+                      <div className="text-[10px] text-slate-500">
+                        [{formatSignedScore(row.edgeCi95[0])}, {formatSignedScore(row.edgeCi95[1])}]
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 text-right font-mono text-slate-400">
                     {row.openStake}u

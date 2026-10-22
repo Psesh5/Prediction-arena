@@ -6,7 +6,13 @@ import {
   tradeSignal,
   type TradeSignal,
 } from "./trading.js";
-import type { LeaderboardRow, MarketWithPredictions, Outcome, Prediction } from "./types.js";
+import type {
+  LeaderboardRow,
+  MarketWithPredictions,
+  Outcome,
+  PairwiseComparison,
+  Prediction,
+} from "./types.js";
 
 /** Brier score of a single binary forecast. Lower is better; 0 is perfect. */
 export function brierScore(probabilityYes: number, outcome: Outcome): number {
@@ -37,6 +43,46 @@ export function consensusProbability(predictions: Prediction[]): number | null {
   return mean(predictions.map((prediction) => prediction.probability));
 }
 
+/** Below this many resolved forecasts a ranking is labelled provisional. */
+export const PROVISIONAL_THRESHOLD = 30;
+
+/** Too few paired observations for a confidence interval to mean anything. */
+const CI_MIN_SAMPLE = 10;
+const CI_RESAMPLES = 2000;
+
+/** Deterministic PRNG so the bootstrap interval is stable between renders. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Bootstrap 95% CI on mean per-event edge. Resamples the paired observations
+ * with replacement; deterministic because every reader should see the same
+ * interval for the same data.
+ */
+export function edgeConfidenceInterval(edges: number[]): [number, number] | null {
+  if (edges.length < CI_MIN_SAMPLE) return null;
+
+  const random = mulberry32(edges.length * 2654435761);
+  const means: number[] = [];
+  for (let i = 0; i < CI_RESAMPLES; i += 1) {
+    let sum = 0;
+    for (let j = 0; j < edges.length; j += 1) {
+      sum += edges[Math.floor(random() * edges.length)];
+    }
+    means.push(sum / edges.length);
+  }
+  means.sort((a, b) => a - b);
+
+  return [means[Math.floor(0.025 * CI_RESAMPLES)], means[Math.ceil(0.975 * CI_RESAMPLES) - 1]];
+}
+
 interface ModelAccumulator {
   modelName: string;
   openCount: number;
@@ -46,6 +92,7 @@ interface ModelAccumulator {
   beats: number[];
   confidences: number[];
   returns: number[];
+  pairedEdges: number[];
   settled: SettledTrade[];
   openRequests: (number | null)[];
 }
@@ -108,6 +155,7 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
           beats: [],
           confidences: [],
           returns: [],
+          pairedEdges: [],
           settled: [],
           openRequests: [],
         };
@@ -115,6 +163,10 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       }
 
       entry.confidences.push(confidence(prediction.probability));
+
+      // Cancelled/refunded markets settle at 50/50: nobody won or lost, so they
+      // count toward neither resolved nor open tallies.
+      if (market.status === "invalid") continue;
 
       if (market.status !== "resolved" || !market.resolvedOutcome) {
         entry.openCount += 1;
@@ -134,6 +186,7 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
         const marketBrier = brierScore(marketProbability, outcome);
         entry.marketBriers.push(marketBrier);
         entry.beats.push(modelBrier < marketBrier ? 1 : 0);
+        entry.pairedEdges.push(marketBrier - modelBrier);
 
         const signal = tradeSignal(prediction.probability, marketProbability);
         if (signal) {
@@ -183,6 +236,8 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       bankroll,
       maxDrawdown,
       bust,
+      provisional: entry.briers.length < PROVISIONAL_THRESHOLD,
+      edgeCi95: edgeConfidenceInterval(entry.pairedEdges),
     };
   });
 
@@ -198,4 +253,80 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
     if (a.brierScore !== b.brierScore) return a.brierScore - b.brierScore;
     return b.resolvedCount - a.resolvedCount;
   });
+}
+
+interface PairwiseSample {
+  modelId: string;
+  modelName: string;
+  brier: number;
+}
+
+/**
+ * Head-to-head model comparisons restricted to events both models forecast and
+ * both saw resolved, so a late-joining model is never compared on questions it
+ * never answered. Only pairs with at least one shared event are returned.
+ */
+export function buildPairwiseComparisons(
+  markets: MarketWithPredictions[]
+): PairwiseComparison[] {
+  const byEvent = new Map<string, { marketBrier: number | null; samples: PairwiseSample[] }>();
+
+  for (const market of markets) {
+    if (market.status !== "resolved" || !market.resolvedOutcome) continue;
+    const outcome = market.resolvedOutcome;
+
+    const samples: PairwiseSample[] = [];
+    let marketBrier: number | null = null;
+    for (const prediction of market.predictions) {
+      samples.push({
+        modelId: prediction.modelId,
+        modelName: prediction.modelName,
+        brier: brierScore(prediction.probability, outcome),
+      });
+      if (prediction.marketProbabilityAtPrediction !== null) {
+        marketBrier = brierScore(prediction.marketProbabilityAtPrediction, outcome);
+      }
+    }
+    byEvent.set(market.id, { marketBrier, samples });
+  }
+
+  interface PairAccum {
+    modelA: string;
+    modelB: string;
+    edgeDiffs: number[];
+    winsA: number;
+    shared: number;
+  }
+  const pairs = new Map<string, PairAccum>();
+
+  for (const { marketBrier, samples } of byEvent.values()) {
+    for (let i = 0; i < samples.length; i += 1) {
+      for (let j = i + 1; j < samples.length; j += 1) {
+        const [a, b] = samples[i].modelId < samples[j].modelId
+          ? [samples[i], samples[j]]
+          : [samples[j], samples[i]];
+
+        const key = `${a.modelId}|${b.modelId}`;
+        let pair = pairs.get(key);
+        if (!pair) {
+          pair = { modelA: a.modelId, modelB: b.modelId, edgeDiffs: [], winsA: 0, shared: 0 };
+          pairs.set(key, pair);
+        }
+
+        pair.shared += 1;
+        if (a.brier < b.brier) pair.winsA += 1;
+        if (marketBrier !== null) {
+          pair.edgeDiffs.push(marketBrier - a.brier - (marketBrier - b.brier));
+        }
+      }
+    }
+  }
+
+  return [...pairs.values()].map((pair) => ({
+    modelA: pair.modelA,
+    modelB: pair.modelB,
+    sharedResolved: pair.shared,
+    meanEdgeDiff: mean(pair.edgeDiffs),
+    winRateA: pair.shared === 0 ? 0 : pair.winsA / pair.shared,
+  }));
 }

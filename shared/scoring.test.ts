@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { brierScore, buildLeaderboard, confidence, consensusProbability, isPredictionCorrect } from "./scoring.js";
+import {
+  brierScore,
+  buildLeaderboard,
+  buildPairwiseComparisons,
+  confidence,
+  consensusProbability,
+  isPredictionCorrect,
+} from "./scoring.js";
 import type { MarketWithPredictions, Outcome, Prediction } from "./types.js";
 
 function prediction(overrides: Partial<Prediction> & { modelId: string }): Prediction {
@@ -213,5 +220,72 @@ describe("buildLeaderboard", () => {
     ]);
     expect(noPrice[0].edge).toBe(0);
     expect(noPrice[0].beatMarketRate).toBe(0);
+  });
+
+  it("marks rankings provisional under the resolved-forecast threshold", () => {
+    const rows = buildLeaderboard(markets);
+    expect(rows.find((row) => row.modelId === "sharp")?.provisional).toBe(true);
+    expect(rows.find((row) => row.modelId === "sharp")?.resolvedCount).toBe(2);
+  });
+
+  it("excludes invalid markets from both open and resolved counts", () => {
+    const invalidMarket = {
+      ...market("voided", "YES", [
+        prediction({ modelId: "sharp", probability: 0.9, marketProbabilityAtPrediction: 0.6 }),
+      ]),
+      status: "invalid" as const,
+      resolvedOutcome: null,
+    };
+    const rows = buildLeaderboard([invalidMarket]);
+    expect(rows[0].resolvedCount).toBe(0);
+    expect(rows[0].openCount).toBe(0);
+    expect(rows[0].trades).toBe(0);
+  });
+
+  it("returns a CI only with enough paired observations", () => {
+    const few = buildLeaderboard(markets);
+    expect(few.find((row) => row.modelId === "sharp")?.edgeCi95).toBeNull();
+
+    const many = buildLeaderboard(
+      Array.from({ length: 12 }, (_, index) =>
+        market(`bulk-${index}`, index % 2 === 0 ? "YES" : "NO", [
+          prediction({
+            modelId: "bulk",
+            probability: index % 2 === 0 ? 0.8 : 0.2,
+            marketProbabilityAtPrediction: 0.5,
+          }),
+        ])
+      )
+    );
+    const ci = many[0].edgeCi95;
+    expect(ci).not.toBeNull();
+    expect(ci![0]).toBeLessThanOrEqual(many[0].edge + 1e-9);
+    expect(ci![1]).toBeGreaterThanOrEqual(many[0].edge - 1e-9);
+  });
+});
+
+describe("buildPairwiseComparisons", () => {
+  it("compares models only on shared resolved events", () => {
+    const comparisons = buildPairwiseComparisons([
+      market("m1", "YES", [
+        prediction({ modelId: "a", probability: 0.9, marketProbabilityAtPrediction: 0.5 }),
+        prediction({ modelId: "b", probability: 0.3, marketProbabilityAtPrediction: 0.5 }),
+        prediction({ modelId: "c", probability: 0.8, marketProbabilityAtPrediction: 0.5 }),
+      ]),
+      market("m2", null, [
+        prediction({ modelId: "a", probability: 0.7 }),
+        prediction({ modelId: "b", probability: 0.6 }),
+      ]),
+    ]);
+
+    const ab = comparisons.find(
+      (pair) => pair.modelA === "a" && pair.modelB === "b"
+    );
+    expect(ab?.sharedResolved).toBe(1);
+    expect(ab?.winRateA).toBe(1); // a's brier 0.01 beats b's 0.49
+    expect(ab?.meanEdgeDiff).toBeCloseTo(0.48);
+
+    // m2 is unresolved: it contributes nothing to any pair.
+    expect(comparisons.every((pair) => pair.sharedResolved === 1)).toBe(true);
   });
 });
