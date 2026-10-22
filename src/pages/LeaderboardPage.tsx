@@ -1,10 +1,13 @@
 import { useState } from "react";
 import type { MarketCategory } from "@shared/types";
 import { useCategories, useLeaderboard } from "@/lib/api";
+import { STARTING_BANKROLL } from "@shared/trading";
 import { formatPercent, formatScore, formatSignedScore } from "@/lib/format";
 
 const COLUMNS = [
-  { key: "return", label: "Return", hint: "Net units won or lost, staking 1 unit per trade at the market price." },
+  { key: "bankroll", label: "Bankroll", hint: `Units left of the ${STARTING_BANKROLL}u each model started with, sizing every bet itself.` },
+  { key: "drawdown", label: "Max DD", hint: "Largest peak-to-trough fall in bankroll along the way." },
+  { key: "return", label: "Flat return", hint: "Net units won or lost if every trade staked exactly 1 unit \u2014 sizing removed." },
   { key: "roi", label: "ROI", hint: "Net return divided by total staked." },
   { key: "trades", label: "Trades", hint: "Settled bets, taken when the model disagreed with the price by 5+ points." },
   { key: "hit", label: "Hit rate", hint: "Share of settled trades that paid out." },
@@ -27,8 +30,9 @@ export default function LeaderboardPage() {
       <div className="mb-4">
         <h1 className="text-xl font-semibold text-slate-100">Model leaderboard</h1>
         <p className="text-sm text-slate-500">
-          Ranked by trading return: every time a model&apos;s probability beats the price by 5+
-          points, it stakes one unit at those odds.
+          Every model starts with {STARTING_BANKROLL}u and sizes its own bets. When its
+          probability beats the price by 5+ points it stakes the share of its bankroll it asked
+          for, capped at 10% per event, and settles at the market odds.
         </p>
       </div>
 
@@ -89,8 +93,25 @@ export default function LeaderboardPage() {
                 <tr key={row.modelId} className="border-t border-ink-800 bg-ink-900/40">
                   <td className="px-4 py-3 font-mono text-slate-500">{index + 1}</td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-slate-100">{row.modelName}</div>
+                    <div className="font-medium text-slate-100">
+                      {row.modelName}
+                      {row.bust ? <span className="ml-2 pill border-loss/50 text-loss">bust</span> : null}
+                    </div>
                     <div className="font-mono text-xs text-slate-500">{row.modelId}</div>
+                  </td>
+                  <td
+                    className={`px-4 py-3 text-right font-mono ${
+                      row.bankroll > STARTING_BANKROLL
+                        ? "text-gain"
+                        : row.bankroll < STARTING_BANKROLL
+                          ? "text-loss"
+                          : "text-slate-300"
+                    }`}
+                  >
+                    {row.bankroll.toFixed(1)}u
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-slate-400">
+                    {row.maxDrawdown.toFixed(1)}u
                   </td>
                   <td
                     className={`px-4 py-3 text-right font-mono ${
@@ -145,7 +166,7 @@ export default function LeaderboardPage() {
               <span key={row.modelId} className="pill bg-ink-900">
                 <span className="text-slate-300">{row.modelName}</span>
                 <span className="font-mono text-slate-500">
-                  {row.openCount} open · {row.openStake}u at risk
+                  {row.openCount} open · {row.openStake.toFixed(1)}u at risk
                 </span>
               </span>
             ))}

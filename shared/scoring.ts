@@ -1,4 +1,11 @@
-import { tradeReturn, tradeSignal } from "./trading.js";
+import {
+  STARTING_BANKROLL,
+  isBust,
+  stakeFor,
+  tradeReturn,
+  tradeSignal,
+  type TradeSignal,
+} from "./trading.js";
 import type { LeaderboardRow, MarketWithPredictions, Outcome, Prediction } from "./types.js";
 
 /** Brier score of a single binary forecast. Lower is better; 0 is perfect. */
@@ -39,7 +46,45 @@ interface ModelAccumulator {
   beats: number[];
   confidences: number[];
   returns: number[];
-  openStake: number;
+  settled: SettledTrade[];
+  openRequests: (number | null)[];
+}
+
+interface SettledTrade {
+  resolvedAt: string;
+  signal: TradeSignal;
+  outcome: Outcome;
+  requestedStake: number | null;
+}
+
+interface BankrollResult {
+  bankroll: number;
+  maxDrawdown: number;
+  bust: boolean;
+}
+
+/**
+ * Replays a model's settled bets in resolution order, sizing each from the
+ * bankroll it had at the time. Losses therefore shrink later bets, and the
+ * per-bet cap in `stakeFor` is what stops one bad call from ending the run.
+ */
+function simulateBankroll(trades: SettledTrade[]): BankrollResult {
+  const ordered = [...trades].sort((a, b) => a.resolvedAt.localeCompare(b.resolvedAt));
+
+  let bankroll = STARTING_BANKROLL;
+  let peak = bankroll;
+  let maxDrawdown = 0;
+
+  for (const trade of ordered) {
+    const stake = stakeFor(trade.requestedStake, bankroll);
+    if (stake === 0) continue;
+
+    bankroll += stake * tradeReturn(trade.signal, trade.outcome);
+    peak = Math.max(peak, bankroll);
+    maxDrawdown = Math.max(maxDrawdown, peak - bankroll);
+  }
+
+  return { bankroll, maxDrawdown, bust: isBust(bankroll) };
 }
 
 /**
@@ -63,7 +108,8 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
           beats: [],
           confidences: [],
           returns: [],
-          openStake: 0,
+          settled: [],
+          openRequests: [],
         };
         byModel.set(prediction.modelId, entry);
       }
@@ -73,7 +119,7 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       if (market.status !== "resolved" || !market.resolvedOutcome) {
         entry.openCount += 1;
         if (tradeSignal(prediction.probability, market.marketProbability)) {
-          entry.openStake += 1;
+          entry.openRequests.push(prediction.requestedStake);
         }
         continue;
       }
@@ -92,6 +138,12 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
         const signal = tradeSignal(prediction.probability, marketProbability);
         if (signal) {
           entry.returns.push(tradeReturn(signal, outcome));
+          entry.settled.push({
+            resolvedAt: market.resolvedAt ?? market.endDate ?? market.createdAt,
+            signal,
+            outcome,
+            requestedStake: prediction.requestedStake,
+          });
         }
       }
     }
@@ -102,6 +154,15 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
     const marketBrier = mean(entry.marketBriers);
     const totalReturn = entry.returns.reduce((sum, value) => sum + value, 0);
     const wins = entry.returns.filter((value) => value > 0).length;
+    const { bankroll, maxDrawdown, bust } = simulateBankroll(entry.settled);
+
+    // Open positions are concurrent, so each is sized off the same bankroll
+    // rather than compounding through them.
+    const openStake = entry.openRequests.reduce<number>(
+      (sum, requested) => sum + stakeFor(requested, bankroll),
+      0
+    );
+
     return {
       modelId,
       modelName: entry.modelName,
@@ -118,7 +179,10 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       tradeWinRate: entry.returns.length === 0 ? 0 : wins / entry.returns.length,
       totalReturn,
       roi: entry.returns.length === 0 ? 0 : totalReturn / entry.returns.length,
-      openStake: entry.openStake,
+      openStake,
+      bankroll,
+      maxDrawdown,
+      bust,
     };
   });
 
@@ -129,6 +193,7 @@ export function buildLeaderboard(markets: MarketWithPredictions[]): LeaderboardR
       if (a.resolvedCount !== b.resolvedCount) return b.resolvedCount - a.resolvedCount;
       return b.openCount - a.openCount;
     }
+    if (a.bankroll !== b.bankroll) return b.bankroll - a.bankroll;
     if (a.totalReturn !== b.totalReturn) return b.totalReturn - a.totalReturn;
     if (a.brierScore !== b.brierScore) return a.brierScore - b.brierScore;
     return b.resolvedCount - a.resolvedCount;

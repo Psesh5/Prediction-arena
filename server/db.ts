@@ -38,6 +38,7 @@ export interface PredictionRow {
   model_id: string;
   model_name: string;
   probability: number;
+  requested_stake: number | null;
   pick: string;
   reasoning: string | null;
   market_probability_at_prediction: number | null;
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   model_id TEXT NOT NULL,
   model_name TEXT NOT NULL,
   probability REAL NOT NULL,
+  requested_stake REAL,
   pick TEXT NOT NULL,
   reasoning TEXT,
   market_probability_at_prediction REAL,
@@ -98,6 +100,12 @@ export const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 db.exec(SCHEMA);
+
+// Databases created before models sized their own bets predate this column.
+const predictionColumns = db.prepare("PRAGMA table_info(predictions)").all() as { name: string }[];
+if (!predictionColumns.some((column) => column.name === "requested_stake")) {
+  db.exec("ALTER TABLE predictions ADD COLUMN requested_stake REAL");
+}
 
 function toCategory(value: string | null): MarketCategory {
   return (MARKET_CATEGORIES as readonly string[]).includes(value ?? "")
@@ -136,6 +144,7 @@ export function toPrediction(row: PredictionRow): Prediction {
     modelId: row.model_id,
     modelName: row.model_name,
     probability: row.probability,
+    requestedStake: row.requested_stake,
     pick: row.pick === "YES" ? "YES" : "NO",
     reasoning: row.reasoning,
     marketProbabilityAtPrediction: row.market_probability_at_prediction,

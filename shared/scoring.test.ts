@@ -8,6 +8,7 @@ function prediction(overrides: Partial<Prediction> & { modelId: string }): Predi
     marketId: "market-1",
     modelName: overrides.modelId.toUpperCase(),
     probability: 0.5,
+    requestedStake: null,
     pick: "YES",
     reasoning: null,
     marketProbabilityAtPrediction: 0.5,
@@ -153,11 +154,55 @@ describe("buildLeaderboard", () => {
     expect(agrees[0].roi).toBe(0);
   });
 
-  it("tracks stake at risk on unresolved events", () => {
+  it("sizes open stake from the model's request and the bankroll it has left", () => {
     const live = buildLeaderboard([
-      market("m6", null, [prediction({ modelId: "bold", probability: 0.9 })]),
+      market("m6", null, [
+        prediction({ modelId: "bold", probability: 0.9, requestedStake: 0.05 }),
+      ]),
     ]);
-    expect(live[0].openStake).toBe(1);
+    // Nothing settled, so the full 100u bankroll backs the 5% request.
+    expect(live[0].openStake).toBeCloseTo(5);
+    expect(live[0].bankroll).toBe(100);
+  });
+
+  it("compounds the bankroll and caps any single bet", () => {
+    const rows = buildLeaderboard([
+      market("b1", "NO", [
+        prediction({
+          modelId: "greedy",
+          probability: 0.9,
+          marketProbabilityAtPrediction: 0.5,
+          requestedStake: 0.9,
+        }),
+      ]),
+      market("b2", "NO", [
+        prediction({
+          modelId: "greedy",
+          probability: 0.9,
+          marketProbabilityAtPrediction: 0.5,
+          requestedStake: 0.9,
+        }),
+      ]),
+    ]);
+
+    // 0.9 requested is capped to 10%: 100 - 10 = 90, then 90 - 9 = 81.
+    expect(rows[0].bankroll).toBeCloseTo(81);
+    expect(rows[0].maxDrawdown).toBeCloseTo(19);
+    expect(rows[0].bust).toBe(false);
+  });
+
+  it("falls back to a default stake when the model declines to size", () => {
+    const rows = buildLeaderboard([
+      market("b3", "NO", [
+        prediction({
+          modelId: "quiet",
+          probability: 0.9,
+          marketProbabilityAtPrediction: 0.5,
+          requestedStake: null,
+        }),
+      ]),
+    ]);
+    expect(rows[0].bankroll).toBeCloseTo(98);
   });
 
   it("ignores market comparison when no price was recorded", () => {
