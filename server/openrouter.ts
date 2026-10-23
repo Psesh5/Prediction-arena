@@ -1,6 +1,10 @@
 import { MAX_STAKE_FRACTION } from "../shared/trading.js";
+import { fetchWithRetry } from "./http.js";
 
-const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_API = "https://openrouter.ai/api/v1";
+
+/** Bump when the forecast prompt or output contract changes materially. */
+export const PROMPT_VERSION = "forecast-v2";
 
 export interface ForecastQuestion {
   question: string;
@@ -98,39 +102,65 @@ export function parseForecast(content: string): Forecast {
   };
 }
 
+export interface ForecastUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  /** Provider-reported cost in USD, when the router supplies it. */
+  costUsd: number | null;
+}
+
+export interface ForecastResult {
+  forecast: Forecast;
+  /** Model slug OpenRouter actually served (provider routing can swap it). */
+  modelReturned: string | null;
+  usage: ForecastUsage;
+  rawResponse: string;
+}
+
 export async function requestForecast(
   market: ForecastQuestion,
   modelId: string,
   apiKey: string
-): Promise<Forecast> {
-  const response = await fetch(OPENROUTER_API, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "X-Title": "Prediction Arena",
+): Promise<ForecastResult> {
+  const response = await fetchWithRetry(
+    `${OPENROUTER_API}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "Prediction Arena",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a superforecaster managing a betting bankroll. You output calibrated probabilities rather than opinions, you size bets by your confidence in your own estimate, and you always reply with valid JSON.",
+          },
+          { role: "user", content: buildForecastPrompt(market) },
+        ],
+        max_tokens: 2000,
+        usage: { include: true },
+      }),
     },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a superforecaster managing a betting bankroll. You output calibrated probabilities rather than opinions, you size bets by your confidence in your own estimate, and you always reply with valid JSON.",
-        },
-        { role: "user", content: buildForecastPrompt(market) },
-      ],
-      max_tokens: 2000,
-    }),
-  });
+    { label: `${modelId} forecast`, timeoutMs: 60_000 }
+  );
 
   if (!response.ok) {
     throw new Error(`${modelId} failed: ${response.status} ${(await response.text()).slice(0, 200)}`);
   }
 
   const data = (await response.json()) as {
+    model?: string;
     choices?: { message?: { content?: string } }[];
     error?: { message?: string };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      cost?: number;
+    };
   };
 
   if (data.error) {
@@ -142,5 +172,28 @@ export async function requestForecast(
     throw new Error(`${modelId} returned no content`);
   }
 
-  return parseForecast(content);
+  return {
+    forecast: parseForecast(content),
+    modelReturned: typeof data.model === "string" ? data.model : null,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens ?? null,
+      outputTokens: data.usage?.completion_tokens ?? null,
+      costUsd: typeof data.usage?.cost === "number" ? data.usage.cost : null,
+    },
+    rawResponse: content.slice(0, 8_000),
+  };
+}
+
+/** Slugs of models the provider actually has, for roster validation. */
+export async function listAvailableModelIds(apiKey: string): Promise<Set<string>> {
+  const response = await fetchWithRetry(
+    `${OPENROUTER_API}/models`,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    { label: "OpenRouter models" }
+  );
+  if (!response.ok) {
+    throw new Error(`OpenRouter model list failed: ${response.status}`);
+  }
+  const data = (await response.json()) as { data?: { id?: string }[] };
+  return new Set((data.data ?? []).map((entry) => entry.id).filter(Boolean) as string[]);
 }

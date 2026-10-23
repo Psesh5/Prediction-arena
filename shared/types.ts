@@ -1,4 +1,4 @@
-export type MarketStatus = "open" | "resolved";
+export type MarketStatus = "open" | "resolved" | "invalid";
 export type Outcome = "YES" | "NO";
 
 export const MARKET_CATEGORIES = [
@@ -84,6 +84,21 @@ export interface LeaderboardRow {
   maxDrawdown: number;
   /** True once the bankroll is spent: the model stops trading. */
   bust: boolean;
+  /** True until the model has enough resolved forecasts for a stable ranking. */
+  provisional: boolean;
+  /** 95% bootstrap confidence interval on `edge`, null below the CI minimum. */
+  edgeCi95: [number, number] | null;
+}
+
+/** Head-to-head comparison on the events two models both forecast and resolved. */
+export interface PairwiseComparison {
+  modelA: string;
+  modelB: string;
+  sharedResolved: number;
+  /** Mean (modelA edge) - (modelB edge) across shared events. */
+  meanEdgeDiff: number;
+  /** Share of shared events where modelA's Brier beat modelB's. */
+  winRateA: number;
 }
 
 export interface ArenaStats {

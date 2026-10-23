@@ -93,25 +93,117 @@ describe("deriveCategory", () => {
 
 describe("settlementStatus", () => {
   it("reports open markets with their live price", () => {
-    expect(settlementStatus(gammaMarket())).toEqual({ state: "open", probability: 0.4 });
+    expect(settlementStatus(gammaMarket())).toEqual({
+      state: "open",
+      probability: 0.4,
+      resolutionStatus: null,
+    });
   });
 
-  it("settles to YES or NO once the price pins to an extreme", () => {
+  it("settles from the oracle's final word, not the price", () => {
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "resolved",
+          outcomePrices: '["1", "0"]',
+        })
+      )
+    ).toEqual({
+      state: "settled",
+      outcome: "YES",
+      probability: 1,
+      source: "uma",
+      resolutionStatus: "resolved",
+    });
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "resolved",
+          outcomePrices: '["0", "1"]',
+        })
+      )
+    ).toEqual({
+      state: "settled",
+      outcome: "NO",
+      probability: 0,
+      source: "uma",
+      resolutionStatus: "resolved",
+    });
+  });
+
+  it("waits while a closed market's proposal can still be disputed", () => {
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "proposed",
+          outcomePrices: '["1", "0"]',
+        })
+      )
+    ).toEqual({ state: "pending", probability: 1, resolutionStatus: "proposed" });
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "disputed",
+          outcomePrices: '["1", "0"]',
+        })
+      )
+    ).toEqual({ state: "pending", probability: 1, resolutionStatus: "disputed" });
+  });
+
+  it("marks a 50/50 payout invalid rather than scoring it", () => {
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "resolved",
+          outcomePrices: '["0.5", "0.5"]',
+        })
+      )
+    ).toEqual({
+      state: "invalid",
+      probability: 0.5,
+      source: "uma",
+      resolutionStatus: "resolved",
+    });
+  });
+
+  it("does not score a 'resolved' market whose prices don't decode", () => {
+    expect(
+      settlementStatus(
+        gammaMarket({
+          closed: true,
+          umaResolutionStatus: "resolved",
+          outcomePrices: '["0.8", "0.2"]',
+        })
+      )
+    ).toEqual({ state: "pending", probability: 0.8, resolutionStatus: "resolved" });
+  });
+
+  it("falls back to price inference only when no oracle status exists", () => {
     expect(settlementStatus(gammaMarket({ closed: true, outcomePrices: '["1", "0"]' }))).toEqual({
       state: "settled",
       outcome: "YES",
       probability: 1,
+      source: "price_inference",
+      resolutionStatus: null,
     });
-    expect(settlementStatus(gammaMarket({ closed: true, outcomePrices: '["0", "1"]' }))).toEqual({
-      state: "settled",
-      outcome: "NO",
-      probability: 0,
+    expect(
+      settlementStatus(gammaMarket({ closed: true, outcomePrices: '["0.5", "0.5"]' }))
+    ).toEqual({
+      state: "invalid",
+      probability: 0.5,
+      source: "price_inference",
+      resolutionStatus: null,
     });
   });
 
   it("stays pending while a closed market is still in dispute", () => {
-    expect(settlementStatus(gammaMarket({ closed: true, outcomePrices: '["0.5", "0.5"]' }))).toEqual(
-      { state: "pending", probability: 0.5 }
+    expect(settlementStatus(gammaMarket({ closed: true, outcomePrices: '["0.7", "0.3"]' }))).toEqual(
+      { state: "pending", probability: 0.7, resolutionStatus: null }
     );
   });
 });
